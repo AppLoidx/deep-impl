@@ -17,6 +17,49 @@ findings go to a parking lot.
 It sets the bar and direction only. Your normal workflow (repo `CLAUDE.md`, TDD, review and PR
 skills) still does the work.
 
+## Example plan
+
+What the dev sees before implementation starts (mock task: duplicate orders on webhook retry):
+
+```
+Goal:         A retried payment webhook never creates a second order; one order per payment event.
+Done when:    A test replaying the same event 5x concurrently fails before the change and
+              passes after (1 order, 4 no-ops). CI green. After deploy: 0 payment events in
+              prod with more than one order (query in PR).
+Approach:     - Expand: add orders.payment_event_id with a unique index; backfill from the
+                stored webhook payloads (live: 41k rows, 12 duplicates).
+              - Handler: insert with ON CONFLICT DO NOTHING and return the existing order,
+                so a retry answers 200 instead of 500.
+              - Replace the in-memory dedupe cache, which misses retries that land on
+                another instance (root cause).
+              - Contract: drop the cache and its config once the index is live.
+              - Short spec in docs/; implementation and an independent review.
+Blast radius: - Old and new versions run side by side during rollout: PR 1 adds the column
+                and index and switches writes; PR 2 removes the cache after PR 1 is live.
+              - The 12 existing duplicates block the unique index: the backfill keeps the
+                first order and marks the rest void (refund state checked per row).
+              - Order-created webhook to merchants fires once per order, so no change there.
+Assumptions:  - The payment event id is stable across retries (provider docs and 3 observed
+                retries agree).
+              - Voided duplicates stay visible in the admin history.
+Parking lot:  - Refund webhook has the same retry pattern (no duplicates seen yet).
+              - Order list query is slow on large accounts; unrelated to this goal.
+Decisions:    - Refund the 2 duplicate orders that were charged twice? That is a live money
+                movement, so it waits for you; the fix ships without it.
+```
+
+How each field earns its place:
+
+| Field | Rule |
+|---|---|
+| Goal | One line. Everything in the run traces back to it. |
+| Done when | A check an outside judge can run: test red then green, CI, a prod query, a number. |
+| Approach | 3-6 one-line bullets, root cause included. |
+| Blast radius | Each thing the change touches and how it stays safe (rollout, data, consumers). |
+| Assumptions | Choices made without stopping; the dev may veto. |
+| Parking lot | Off-goal findings. Listed, not built. |
+| Decisions | Only choices outside the authorization. Omitted when there are none. |
+
 ## Install
 
 ```bash
